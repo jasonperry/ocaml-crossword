@@ -4,6 +4,8 @@ type cell =
   | Empty
   | Filled of char
 
+type direction = Across | Down  (* TODO: use these instead of bools. *)
+
 module CoordMap =
   Map.Make (struct
       type t = int * int
@@ -171,42 +173,6 @@ module CrosswordGrid = struct
 
 end (* CrosswordGrid *)
 
-(*
-(** Return an attached position of an adjacent row with blank places *)
-let rec next_blank_from grid (i, j) direction =
-  let has_blanks = Array.exists (fun cell -> cell = Empty) in
-  if direction then
-    let this_arr, (istart, jstart) = CrosswordGrid.get_across grid (i, j) in
-    if has_blanks this_arr then Some ((istart, jstart), true)
-    else
-      let rec try_downs j =
-        (* match next_blank_from grid (istart, j) false with *)
-        let this_down, pos = CrosswordGrid.get_down grid (istart, j) in
-        print_endline ("Looking down at: " ^ string_of_int (fst pos)
-                       ^ ", " ^ string_of_int (snd pos));
-        if has_blanks this_down then Some (pos, false)
-        else
-           if j = jstart + Array.length this_arr - 1 then None
-           else try_downs (j+1)
-      in
-      try_downs jstart
-  else (* current direction is down, try across *)
-    let this_arr, (istart, jstart) = CrosswordGrid.get_down grid (i, j) in
-    if has_blanks this_arr then Some ((istart, jstart), false)
-    else
-      let rec try_across i =
-        (* it shouldn't recurse the whole thing? *)
-        (* match next_blank_from grid (i, jstart) true with *)
-        let this_across, pos = CrosswordGrid.get_across grid (i, jstart) in
-        print_endline ("Looking across at: " ^ string_of_int (fst pos)
-                       ^ ", " ^ string_of_int (snd pos));
-        if has_blanks this_across then Some (pos, true)
-        else 
-           if i = istart + Array.length this_arr - 1 then None
-           else try_across (i+1)
-      in
-      try_across istart 
- *)
 
 (* Filter won't work, wordlist might have repeats and we want to remove
  * only one *)
@@ -226,23 +192,27 @@ let rec print_string_list = function
 (* keep a running set of adjacent (blank, directions)?
  * If some of them get un-blank or are repeats, it's ok, just keep trying *)
 
-let rec pop_until f st =
-  let item = Stack.pop st in 
-  if f item then item else pop_until f st
+let rec pop_until_opt f st =
+  match Stack.pop_opt st with
+  | Some item -> if f item then Some item else pop_until_opt f st
+  | None -> None
 
 let solve grid words =
   let frontier = Stack.create () in
-  let rec solve_from grid words (i, j) direction = 
-    (* placed all words = win *)
-    if words = [] then (
-      print_endline "Win?";
-      print_string (CrosswordGrid.to_string grid);
+  let rec solve_from (grid: CrosswordGrid.t) words = 
+    (* If no blanks left, we won *)
+    match pop_until_opt (fun (pos, dir) ->
+              CrosswordGrid.is_empty grid.cells pos) frontier
+    with
+    | None ->
+      print_endline "Done! (I hope, is it?)";
       Some grid
-    )
-    else
-      let getter = if direction then CrosswordGrid.get_across
-                   else CrosswordGrid.get_down in 
-      let this_row, pos = getter grid (i, j) in (* kind of redundant with 'try' *)
+    | Some (pos, dir) -> (
+      let this_row, pos = CrosswordGrid.get_row grid pos dir in
+      print_endline (
+          "Now looking to fill around (" ^ string_of_int (fst pos)
+          ^ ", " ^ string_of_int (snd pos)
+          ^ (if dir then ") across" else ") down"));
       let wordcands = List.filter (fun w ->
                           String.length w = Array.length this_row)
                         words in
@@ -250,37 +220,28 @@ let solve grid words =
         (* print_string_list wcands; *)
         match wcands with
         | [] ->
-           print_endline "out of candidates";
-           print_string (CrosswordGrid.to_string grid);
+           print_endline "out of candidates, will backtrack...";
+           (* print_string (CrosswordGrid.to_string grid); *)
            None (* just a fail of this iteration *)
         | word::rest -> (
-          match CrosswordGrid.try_add_word grid pos direction word with
+          match CrosswordGrid.try_add_word grid pos dir word with
           | Some newgrid -> (
-            print_endline ("added word " ^ word);
-            CrosswordGrid.add_frontier_blanks newgrid frontier pos direction;
             (* success, find a match and recurse main *)
-            (* print_string (CrosswordGrid.to_string newgrid); *)
-            let newpos, newdir =
-              try 
-                pop_until (fun (pos, dir) ->
-                    CrosswordGrid.is_empty newgrid.cells pos) frontier
-              with Stack.Empty ->
-                print_string (CrosswordGrid.to_string newgrid);
-                failwith "Am I done?"
-            in 
-            print_endline ("Now looking for " ^ string_of_int (fst newpos)
-                           ^ ", " ^ string_of_int (snd newpos)
-                           ^ (if newdir then " across" else " down"));
-            (* Here's the magic. Try to solve the whole thing;
-             * if not, keep going *)
-            match solve_from newgrid
-                    (list_remove_one words word) newpos newdir with
+            CrosswordGrid.add_frontier_blanks newgrid frontier pos dir;
+            print_endline ("added word " ^ word);
+            print_string (CrosswordGrid.to_string newgrid);
+            (* Here's the magic nested recursion. Try to solve the whole thing;
+             * if not, keep going with the next candidate. *)
+            match solve_from newgrid (list_remove_one words word) with
             | Some grid -> Some grid (* yay. Pop all the way up? *)
             | None -> try_candidates rest )
           | None -> try_candidates rest)
       in
-      try_candidates wordcands         
-  in solve_from grid words (0, 0) true
+      try_candidates wordcands )
+  in
+  Stack.push ((0, 0), true) frontier;
+  solve_from grid words
+
 (* More difficult than I expected; what if we add one that doesn't match 
  * in another direction? How will it ever find it? *)
 
@@ -295,17 +256,6 @@ let read_words filename =
     | Some w -> lines (w::acc)
   in
   List.rev (lines [])
-
-(* recursive backtracking solver: 
-  find a blank word
-  recurse on 
-
-  need to write next_word_pos that finds empty space from a given word 
-(but I may have to backtrack to find one...
-no, you can just try recursively from every position in the given word.
-Assuming the puzzle is a connected word, you'll find it.
- *)
-
 
 let grid1 = CrosswordGrid.create 13 13 [
                 (0, 5); (0, 9);
@@ -327,6 +277,4 @@ let words = read_words "puzz1words.txt"
 
 let _ = print_string (CrosswordGrid.to_string grid1)
 let _ = solve grid1 words
-
-(* data structure to remove words? just findall with length and try_add_word on each.  *)
 
